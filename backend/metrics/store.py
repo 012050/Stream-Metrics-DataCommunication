@@ -2,8 +2,8 @@
 
 프론트엔드 App.jsx의 tick 루프와 동일하게 동작한다:
 - mode별 72개 샘플 롤링 윈도우(deque)를 유지
-- 1초마다 새 샘플을 양쪽 mode에 추가
-- 시나리오 변경 시 tick을 72로 리셋하고 히스토리를 재초기화
+- 1초마다 MetricsGenerator의 1틱을 호출해 양쪽 mode에 새 샘플 추가
+- 시나리오 변경 시 생성기 상태 리셋 + 히스토리 재초기화
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import asyncio
 from collections import deque
 
 from . import generator
-from .generator import HISTORY_SIZE  # noqa: F401  (재수출 — main.py에서 사용)
+from .generator import HISTORY_SIZE, MetricsGenerator, seed_from_env
 
 TICK_INTERVAL_SEC = 1.0
 
@@ -21,9 +21,9 @@ class MetricsStore:
 
     def __init__(self) -> None:
         self._scenario = "normal"
-        self._tick = 0
+        self._gen = MetricsGenerator(seed=seed_from_env())
         self._history: dict[str, deque] = {
-            mode: deque(maxlen=generator.HISTORY_SIZE) for mode in generator.MODES
+            mode: deque(maxlen=HISTORY_SIZE) for mode in generator.MODES
         }
         self._task: asyncio.Task | None = None
         self._rebuild_history()
@@ -32,23 +32,18 @@ class MetricsStore:
 
     def _rebuild_history(self) -> None:
         """현재 시나리오로 과거 72초 치 히스토리를 (재)생성한다."""
-        now = generator.now_ms()
         for mode in generator.MODES:
             window = self._history[mode]
             window.clear()
-            for sample in generator.initial_history(mode, self._scenario):
+            for sample in self._gen.warmup(mode):
                 window.append(sample)
-        self._tick = generator.HISTORY_SIZE  # frontend와 동일하게 tick을 72로 시작
 
     async def _run(self) -> None:
         while True:
             await asyncio.sleep(TICK_INTERVAL_SEC)
-            self._tick += 1
             ts = generator.now_ms()
             for mode in generator.MODES:
-                self._history[mode].append(
-                    generator.make_sample(mode, self._tick, self._scenario, ts)
-                )
+                self._history[mode].append(self._gen.next_sample(mode, ts))
 
     # -- 공개 API -------------------------------------------------------------
 
@@ -63,14 +58,20 @@ class MetricsStore:
             self._task = None
 
     @property
+    def seed(self) -> int | None:
+        """사용 중인 난수 시드 (None이면 시드 없음). 데모 재현성 확인용."""
+        return self._gen.seed
+
+    @property
     def scenario(self) -> str:
         return self._scenario
 
     def set_scenario(self, scenario: str) -> None:
-        """시나리오를 변경한다. (frontend handleScenarioChange 대응: tick 리셋 + 재초기화)"""
+        """시나리오 변경. (frontend handleScenarioChange 대응: 상태 리셋 + 재초기화)"""
         if scenario not in generator.EFFECTS:
             raise ValueError(f"알 수 없는 시나리오: {scenario} ({', '.join(generator.EFFECTS)})")
         self._scenario = scenario
+        self._gen.set_scenario(scenario)
         self._rebuild_history()
 
     def latest(self, mode: str) -> dict:

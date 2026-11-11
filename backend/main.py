@@ -74,6 +74,7 @@ def health() -> dict:
         "modes": list(generator.MODES),
         "scenario": store.scenario,
         "historySize": generator.HISTORY_SIZE,
+        "seed": store.seed,
     }
 
 
